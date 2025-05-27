@@ -1,71 +1,24 @@
-#include <AccelStepper.h>
+#include <Arduino.h>
 
-// Define motor interface type (4 pins)
-#define MOTOR_INTERFACE_TYPE 4
+#define LED_PIN 2          // Onboard LED (optional)
+#define PHOTO_PIN_1 13     // First photoresistor (analog input)
+#define PHOTO_PIN_2 12     // Second photoresistor (analog input)
 
-// Create a stepper instance (IN1, IN3, IN2, IN4 — typical for 28BYJ-48 with ULN2003)
-AccelStepper myStepper(MOTOR_INTERFACE_TYPE, 14, 26, 27, 25);
-
-const int ldrOutsidePin = 34; // ADC1_CH6
-const int ldrInsidePin = 35;  // ADC1_CH7
-const int relayPin = 33;      // Relay control
-
-const int stepsPerRevolution = 2048; // For stepper
-const int thresholdOutside = 2500;
-const int thresholdInside = 2000;
-
-bool blindsClosed = false;
-
-void setup()
-{
+void setup() {
   Serial.begin(115200);
-
-  pinMode(relayPin, OUTPUT);
-  digitalWrite(relayPin, LOW);
-
-  myStepper.setMaxSpeed(1000);
-  myStepper.setSpeed(200);
+  pinMode(LED_PIN, OUTPUT);  // Optional, in case you use the LED
+  Serial.println("Photoresistors activated...");
 }
 
-void loop()
-{
-  int lightOutside = analogRead(ldrOutsidePin);
-  int lightInside = analogRead(ldrInsidePin);
+void loop() {
+  // Read photoresistors
+  int photoValue1 = analogRead(PHOTO_PIN_1);
+  int photoValue2 = analogRead(PHOTO_PIN_2);
 
-  Serial.print("Outside: ");
-  Serial.print(lightOutside);
-  Serial.print(" | Inside: ");
-  Serial.println(lightInside);
+  Serial.print("Photoresistor 1: ");
+  Serial.print(photoValue1);
+  Serial.print(" | Photoresistor 2: ");
+  Serial.println(photoValue2);
 
-  if (lightOutside > thresholdOutside && !blindsClosed)
-  {
-    Serial.println("Too bright outside: closing blinds");
-    myStepper.moveTo(stepsPerRevolution);
-    while (myStepper.distanceToGo() != 0)
-    {
-      myStepper.run();
-    }
-    blindsClosed = true;
-  }
-  else if (lightOutside <= thresholdOutside && blindsClosed)
-  {
-    Serial.println("Outside OK: opening blinds");
-    myStepper.moveTo(0);
-    while (myStepper.distanceToGo() != 0)
-    {
-      myStepper.run();
-    }
-    blindsClosed = false;
-  }
-
-  if (lightInside < thresholdInside)
-  {
-    digitalWrite(relayPin, HIGH);
-  }
-  else
-  {
-    digitalWrite(relayPin, LOW);
-  }
-
-  delay(3000);
+  delay(200);  // Delay for stability
 }
