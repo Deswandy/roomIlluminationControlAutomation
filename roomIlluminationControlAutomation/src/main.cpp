@@ -1,71 +1,101 @@
-#include <AccelStepper.h>
+#include <Arduino.h>
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEServer.h>
+#include <BLE2902.h>
+#include <ESP32Servo.h>
 
-// Define motor interface type (4 pins)
-#define MOTOR_INTERFACE_TYPE 4
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CHAR_SENSOR_UUID    "beb5483e-36e1-4688-b7f5-ea07361b26a8"  // Notify (ADC data)
+#define CHAR_CONTROL_UUID   "5c8c1a8e-5b69-4d68-bc2c-8d36b1f67270"  // Write (Servo angle override)
 
-// Create a stepper instance (IN1, IN3, IN2, IN4 — typical for 28BYJ-48 with ULN2003)
-AccelStepper myStepper(MOTOR_INTERFACE_TYPE, 14, 26, 27, 25);
+#define PHOTO_PIN_1   26
+#define PHOTO_PIN_2   25
+#define SERVO_PIN     13
 
-const int ldrOutsidePin = 34; // ADC1_CH6
-const int ldrInsidePin = 35;  // ADC1_CH7
-const int relayPin = 33;      // Relay control
+BLECharacteristic *pSensorCharacteristic;
+BLECharacteristic *pControlCharacteristic;
 
-const int stepsPerRevolution = 2048; // For stepper
-const int thresholdOutside = 2500;
-const int thresholdInside = 2000;
+Servo servo;
+int currentServoAngle = 90;
+bool overrideMode = false; // True if ITOM writes servo angle
 
-bool blindsClosed = false;
+// BLE write callback: update servo angle
+class ControlCallback : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) {
+    std::string value = pCharacteristic->getValue();
+    if (value.length() >= 1) {
+      int angle = (uint8_t)value[0];
+      angle = constrain(angle, 0, 180);
+      servo.write(angle);
+      currentServoAngle = angle;
+      overrideMode = true;
+      Serial.printf("Received angle from ITOM: %d\n", angle);
+    }
+  }
+};
 
-void setup()
-{
+void setup() {
   Serial.begin(115200);
 
-  pinMode(relayPin, OUTPUT);
-  digitalWrite(relayPin, LOW);
+  // Attach servo
+  servo.attach(SERVO_PIN, 500, 2400);
+  servo.write(currentServoAngle);
 
-  myStepper.setMaxSpeed(1000);
-  myStepper.setSpeed(200);
+  // BLE setup
+  BLEDevice::init("ESP32_LightSensor_BLE");
+  BLEServer *pServer = BLEDevice::createServer();
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+
+  pSensorCharacteristic = pService->createCharacteristic(
+                            CHAR_SENSOR_UUID,
+                            BLECharacteristic::PROPERTY_NOTIFY
+                          );
+  pSensorCharacteristic->addDescriptor(new BLE2902());
+
+  pControlCharacteristic = pService->createCharacteristic(
+                             CHAR_CONTROL_UUID,
+                             BLECharacteristic::PROPERTY_WRITE
+                           );
+  pControlCharacteristic->setCallbacks(new ControlCallback());
+
+  pService->start();
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  BLEDevice::startAdvertising();
+
+  Serial.println("BLE Sensor + Servo ready");
 }
 
-void loop()
-{
-  int lightOutside = analogRead(ldrOutsidePin);
-  int lightInside = analogRead(ldrInsidePin);
+void loop() {
+  // Read light levels
+  uint16_t adc1 = analogRead(PHOTO_PIN_1);
+  uint16_t adc2 = analogRead(PHOTO_PIN_2);
 
-  Serial.print("Outside: ");
-  Serial.print(lightOutside);
-  Serial.print(" | Inside: ");
-  Serial.println(lightInside);
+  // Send to ITOM (ADC values)
+  uint8_t buffer[4];
+  buffer[0] = adc1 & 0xFF;
+  buffer[1] = (adc1 >> 8) & 0xFF;
+  buffer[2] = adc2 & 0xFF;
+  buffer[3] = (adc2 >> 8) & 0xFF;
+  pSensorCharacteristic->setValue(buffer, sizeof(buffer));
+  pSensorCharacteristic->notify();
 
-  if (lightOutside > thresholdOutside && !blindsClosed)
-  {
-    Serial.println("Too bright outside: closing blinds");
-    myStepper.moveTo(stepsPerRevolution);
-    while (myStepper.distanceToGo() != 0)
-    {
-      myStepper.run();
+  // Auto-servo control (only if not overridden)
+  if (!overrideMode) {
+    // Average light
+    uint16_t avgADC = (adc1 + adc2) / 2;
+
+    // Convert light (dark = 0°, bright = 180°)
+    int angle = map(avgADC, 0, 4095, 0, 180);
+    angle = constrain(angle, 0, 180);
+
+    if (angle != currentServoAngle) {
+      servo.write(angle);
+      currentServoAngle = angle;
+      Serial.printf("Auto angle from light: %d (ADC avg: %d)\n", angle, avgADC);
     }
-    blindsClosed = true;
-  }
-  else if (lightOutside <= thresholdOutside && blindsClosed)
-  {
-    Serial.println("Outside OK: opening blinds");
-    myStepper.moveTo(0);
-    while (myStepper.distanceToGo() != 0)
-    {
-      myStepper.run();
-    }
-    blindsClosed = false;
   }
 
-  if (lightInside < thresholdInside)
-  {
-    digitalWrite(relayPin, HIGH);
-  }
-  else
-  {
-    digitalWrite(relayPin, LOW);
-  }
-
-  delay(3000);
+  delay(100); // 10 Hz
 }
