@@ -1,84 +1,49 @@
-#import pip
-# pip.main(['install', 'bleak'])
-
-
 import asyncio
-from bleak import BleakClient, BleakScanner, BleakError
+from bleak import BleakClient, BleakScanner
 
+# UUIDs (must match ESP32's)
 SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
-DEVICE_NAME = "ESP32_LightSensor_BLE"
+CHAR_IO_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+
+def decode_light_data(data: bytearray) -> int:
+    """Decode 2-byte light sensor value from ESP32."""
+    return int.from_bytes(data, byteorder='little')
 
 def notification_handler(sender, data):
-    try:
-        if len(data) == 4:
-            photo1 = int.from_bytes(data[0:2], 'little')
-            photo2 = int.from_bytes(data[2:4], 'little')
-            print(f"Photo1: {photo1} | Photo2: {photo2}")
-        else:
-            print(f"Unexpected data length: {len(data)}")
-    except Exception as e:
-        print(f"Error processing notification data: {e}")
+    """Handle incoming BLE notifications (light sensor readings)."""
+    light_value = decode_light_data(data)
+    print(f"Light Sensor: {light_value} (Raw bytes: {list(data)})")
 
-async def find_device(name, timeout=10):
-    print("Scanning for BLE devices...")
-    try:
-        devices = await BleakScanner.discover(timeout=timeout)
-    except BleakError as e:
-        print(f"Scanner error: {e}")
-        return None
-    except Exception as e:
-        print(f"Unexpected scanning error: {e}")
-        return None
+async def main():
+    print("Scanning for ESP32...")
+    devices = await BleakScanner.discover()
 
-    for device in devices:
-        if device.name == name:
-            print(f"Found device: {device.name} ({device.address})")
-            return device
-    print(f"Device '{name}' not found during scan.")
-    return None
+    esp32 = None
+    for d in devices:
+        if d.name and "ESP32_SensorServo_BLE" in d.name:
+            esp32 = d
+            break
 
-async def connect_and_listen():
-    while True:
-        device = await find_device(DEVICE_NAME)
-        if not device:
-            print("Retrying scan in 5 seconds...")
-            await asyncio.sleep(5)
-            continue
+    if not esp32:
+        print("ESP32 device not found.")
+        return
 
-        try:
-            async with BleakClient(device.address) as client:
-                connected = await client.is_connected()
-                if not connected:
-                    print("Failed to connect to device.")
-                    await asyncio.sleep(5)
-                    continue
+    print(f"Connecting to {esp32.name} ({esp32.address})")
+    async with BleakClient(esp32.address) as client:
+        if not await client.is_connected():
+            print("Failed to connect.")
+            return
 
-                print("Connected to ESP32!")
+        print("Connected! Subscribing to notifications...")
 
-                try:
-                    await client.start_notify(CHARACTERISTIC_UUID, notification_handler)
-                except BleakError as e:
-                    print(f"Failed to start notifications: {e}")
-                    continue
+        await client.start_notify(CHAR_IO_UUID, notification_handler)
 
-                print("Listening for notifications. Press Ctrl+C to stop.")
-                while await client.is_connected():
-                    await asyncio.sleep(1)
+        print("Receiving data for 30 seconds...")
+        await asyncio.sleep(30)
 
-                print("Device disconnected.")
+        await client.stop_notify(CHAR_IO_UUID)
+        print("Stopped notifications.")
 
-        except BleakError as e:
-            print(f"BLE Error: {e}")
-        except Exception as e:
-            print(f"Unexpected error: {e}")
-
-        print("Reconnecting in 5 seconds...")
-        await asyncio.sleep(5)
-
+# Run the async event loop
 if __name__ == "__main__":
-    try:
-        asyncio.run(connect_and_listen())
-    except KeyboardInterrupt:
-        print("\nProgram interrupted by user. Exiting gracefully.")
-
+    asyncio.run(main())
